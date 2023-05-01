@@ -1,0 +1,32 @@
+dependencies:
+  - OpenZeppelin/openzeppelin-contracts@4.7.2
+  - DennisDv24/scatter-auction@0.2.0
+compiler:
+  solc:
+    remappings:
+      - '@openzeppelin=OpenZeppelin/openzeppelin-contracts@4.7.2'
+      - '@scatter-auction=DennisDv24/scatter-auction@0.2.0'
+      - 'solady=./lib/solady'
+
+dotenv: .env
+wallets:
+  from_key: ${PRIVATE_KEY}
+  test1: ${T1}
+  test2: ${T2}
+  test3: ${T3}
+  test4: ${T4}
+  test5: ${T5}
+  test6: ${T6}
+  test7: ${T7}
+  test8: ${T8}
+  test9: ${T9}
+
+networks:
+  goerli:
+    verify: True
+  mainnet:
+    verify: True
+  polygon-main:
+    verify: True
+  polygon-test:
+    verify: True
