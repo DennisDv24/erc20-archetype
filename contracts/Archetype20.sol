@@ -17,38 +17,42 @@ error AuctionContractNotConfigured();
 error WrongRewardsClaim();
 error OwnershipError();
 error MaxSupplyExceded();
+error WrongMerkleRoot();
+error WrongRewardsWeight();
+error WrongExtraRewardsWeight();
+error WrongNftContract();
+error LockedForever();
 
 type Bps is uint256;
 
-// TODO refactor TODO REFACTOR WTFS THIS STRUCT BRO
 struct Config {
-	address auctionContract; // optional address if contract supports auctions.
-}
-
-struct Options {
 	bool mintLocked;
 	bool ownerMintLocked;
+	uint256 maxSupply;
+	bool maxSupplyLocked;
+	bool weightedAuctionRewardsLocked;
+	bool auctionRewardsLocked;
+	bool nftHoldsRewardsLocked;
 }
 
 /**
- * @dev An WeightedRewardedAuction will distribute weighted rewards
- * based on a variable in the `weightedVariableRoot`. For example, if
- * `weightedVariableRoot` defined an mapping between `address bidder`
- * and `uint256 derivsHeld`, and if `sh` were the shares for `bidder`,
- * then the rewards will be calculated as:
+ * @dev An WeightedRewardedAuction will distribute weighted rewards based on a
+ * variable in the `weightedVariableRoot`. For example, if `weightedVariableRoot`
+ * defined an mapping between `address bidder` and `uint256 derivsHeld`, and if `sh`
+ * were the shares for `bidder`, then the rewards will be calculated as:
  * 
  *    sh * baseRewardWeight * (1 + extraRewardWeight * derivsHeld) 
  *
- * Note that the weights are codified as Bps, so some conversions
- * are required. To have normal rewarded auctions based on
- * `baseRewardWeight` simpply set the `weightedVariableRoot` to 0. In
- * any other case, `isEnabled` should be false.
- * @param acutionContract should implement the IHoldsShares interface
- * so `getAndClaimShares` can be called when implementing rewards
- * claiming logic.
+ * Note that the weights are codified as Bps, so some conversions are required. 
+ * @param acutionContract Should implement the IHoldsShares interface so
+ * `getAndClaimShares` can be called when implementing rewards claiming logic.
+ * @param hasExtraRewards Will determine if the rewards are weighted based on
+ * `weightedVariableRoot`. If thats the case, the contract owner should call
+ * `configureWeightedAuctionRewards` instead of `configureAuctionRewards`.
  */
 struct WeightedRewardedAuctionConfig {
 	bool isEnabled;
+	bool hasExtraRewards;
 	uint256 baseRewardWeight; // Bps
 	uint256 extraRewardWeight; // Bps
 	bytes32 weightedVariableRoot;
@@ -72,31 +76,79 @@ struct RewardedNftHoldingConfig {
 contract Archetype20 is Ownable, ERC20 {
 	
 	Config public config;
-	Options public options;
-
 	WeightedRewardedAuctionConfig public auctionRewardsConfig;
 	RewardedNftHoldingConfig public nftHoldsRewardConfig;
 	
-	uint256 MAX_SUPPLY = 10; // TODO refactor :)
-	
 	// TODO add cute UTFs and asciis to the code and test them on etherscan (Critical).
-	// TODO add contract configuration methods.
-	/* Contract Initialization Methods */
+	/*****************************************************\
+	|* Contract Initialization And Configuration Methods *|
+	\*****************************************************/
 	constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
+
+	function setMaxSupply(uint256 _maxSupply) public onlyOwner {
+		config.maxSupply = _maxSupply;
+	}
 	
-	/* Minting  Methods */
+	function configureWeightedAuctionRewards(
+		uint256 _rewardWeight,
+		uint256 _extraRewardWeight,
+		bytes32 _weightedVariableRoot,
+		address _auctionContract
+	) public onlyOwner {
+		if (config.weightedAuctionRewardsLocked) revert LockedForever();
+		if (_extraRewardWeight == 0) revert WrongExtraRewardsWeight();
+		if (_weightedVariableRoot == bytes32(0)) revert WrongMerkleRoot();
+
+		configureAuctionRewards(_rewardWeight, _auctionContract);
+		auctionRewardsConfig.hasExtraRewards = true;
+		auctionRewardsConfig.extraRewardWeight = _extraRewardWeight;
+		auctionRewardsConfig.weightedVariableRoot = _weightedVariableRoot; 
+	}
+
+	function configureAuctionRewards(
+		uint256 _rewardWeight, address _auctionContract
+	) public onlyOwner {
+		if (config.auctionRewardsLocked) revert LockedForever();
+		if (_rewardWeight == 0) revert WrongRewardsWeight();
+		if (!IHoldsShares(_auctionContract).getIsSharesUpdater(address(this))) 
+			revert AuctionContractNotConfigured();
+
+		auctionRewardsConfig.isEnabled = true;
+		auctionRewardsConfig.hasExtraRewards = false;
+		auctionRewardsConfig.baseRewardWeight = _rewardWeight;
+		auctionRewardsConfig.auctionContract = _auctionContract;
+	}
+
+	function configureNftHoldingRewards(
+		uint256 _rewardWeightPerDay, address _nftContract
+	) public onlyOwner {
+		if (config.nftHoldsRewardsLocked) revert LockedForever();
+		if (_rewardWeightPerDay == 0) revert WrongRewardsWeight();
+		if (_nftContract == address(0)) revert WrongNftContract();
+
+		nftHoldsRewardConfig.isEnabled = true;
+		nftHoldsRewardConfig.rewardWeightPerDay = _rewardWeightPerDay;
+		nftHoldsRewardConfig.rewardsDistributionStarted = block.timestamp;
+		nftHoldsRewardConfig.nftContract = _nftContract;
+	}
+	
+	/********************\
+	|* Minting  Methods *|
+	\********************/
 	function _mint(address account, uint256 amount) internal virtual override {
-		if (options.mintLocked) revert MintLocked();
+		if (config.mintLocked) revert MintLocked();
 		super._mint(account, amount);
 	}
 
 	function ownerMint(address account, uint256 amount) public onlyOwner() {
-		if (options.ownerMintLocked) revert OwnerMintLocked();
+		if (config.ownerMintLocked) revert OwnerMintLocked();
 	}
 	
-	/* Rewards claiming methods */
+	/****************************\
+	|* Rewards claiming methods *|
+	\****************************/
 	function claimAuctionRewards() public {
-		if (auctionRewardsConfig.weightedVariableRoot != bytes32(0))
+		if (auctionRewardsConfig.hasExtraRewards)
 			revert WrongRewardsClaim();
 
 		bytes32[] memory proof = new bytes32[](1);
@@ -106,16 +158,12 @@ contract Archetype20 is Ownable, ERC20 {
 	function claimWeightedAuctionRewards(
 		bytes32[] memory proof, uint96 timesConditonMet
 	) public {
-		if (totalSupply() >= MAX_SUPPLY) revert MaxSupplyExceded();
+		if (supplyLeft() == 0) revert MaxSupplyExceded();
 
-		if (config.auctionContract == address(0) || !auctionRewardsConfig.isEnabled)
+		if (!auctionRewardsConfig.isEnabled)
 			revert AuctionRewardsNotSet();
 
-		IHoldsShares auction = IHoldsShares(config.auctionContract);
-
-		if (!auction.getIsSharesUpdater(address(this))) 
-			revert AuctionContractNotConfigured();
-
+		IHoldsShares auction = IHoldsShares(auctionRewardsConfig.auctionContract);
 		uint256 shares = auction.getAndClearSharesFor(msg.sender);
 		
 		if (!verifyCondition(proof, msg.sender, timesConditonMet))
@@ -123,7 +171,7 @@ contract Archetype20 is Ownable, ERC20 {
 		
 		_mint(
 			msg.sender,
-			min(getRewardsFor(timesConditonMet, shares), MAX_SUPPLY - totalSupply())
+			min(getRewardsFor(timesConditonMet, shares), supplyLeft())
 		);
 	}
 
@@ -144,10 +192,12 @@ contract Archetype20 is Ownable, ERC20 {
 	function claimRewardsForNftsHeld(
 		uint16[] calldata ids 
 	) public {
-		if (totalSupply() >= MAX_SUPPLY) revert MaxSupplyExceded();
+		RewardedNftHoldingConfig storage conf = nftHoldsRewardConfig;
+
+		if (!conf.isEnabled) revert AuctionRewardsNotSet();
+		if (supplyLeft() == 0) revert MaxSupplyExceded();
 
 		uint256 amountToClaim;
-		RewardedNftHoldingConfig storage conf = nftHoldsRewardConfig;
 
 		for (uint16 i; i < ids.length; ) {
 			
@@ -164,13 +214,15 @@ contract Archetype20 is Ownable, ERC20 {
 			conf.lastTimeClaimed[ids[i]] = block.timestamp;
 		}
 		
-		amountToClaim = min(amountToClaim, MAX_SUPPLY - totalSupply());
+		amountToClaim = min(amountToClaim, supplyLeft());
 
 		_mint(msg.sender, amountToClaim);
 		
 	}
 	
-	/* Helper functions */
+	/********************\
+	|* Helper functions *|
+	\********************/
 	function max(uint256 a, uint256 b) public pure returns (uint256) {
 		return a >= b ? a : b;
 	}
@@ -189,5 +241,59 @@ contract Archetype20 is Ownable, ERC20 {
 			keccak256(abi.encodePacked(bidder, timesConditonMet))
 		);
 	}
+
+	function supplyLeft() public view returns (uint256) {
+		return totalSupply() > config.maxSupply ? 
+			0 : config.maxSupply - totalSupply();
+	}
+
+	/***************************************\
+	|* Logic Locking and Disabling Methods *|
+	\***************************************/
+	function disableAuctionRewards() public onlyOwner {
+		auctionRewardsConfig.isEnabled = false;
+	}
+
+	function disableWeightedAuctionRewards() public onlyOwner {
+		auctionRewardsConfig.isEnabled = false;
+		// For security reasons we make the owner to configure the auction
+		// rewards again, if he wanted non-weighted auction rewards
+		auctionRewardsConfig.hasExtraRewards = false;
+	}
+
+	function disableNftHoldingRewards() public onlyOwner {
+		nftHoldsRewardConfig.isEnabled = false;
+	}
+	
+	function lockMaxSupplyForever() public onlyOwner {
+		config.maxSupplyLocked = true;
+	}
+
+	function lockAllMintsForever() public onlyOwner {
+		config.mintLocked = true;
+	}
+
+	function lockOwnerMintsForever() public onlyOwner {
+		config.ownerMintLocked = true;
+	}
+
+	function lockWeightedAuctionRewardsForever() public onlyOwner {
+		config.weightedAuctionRewardsLocked = true;
+		// For security reasons we make the owner to configure the auction
+		// rewards again, if he wanted non-weighted auction rewards
+		auctionRewardsConfig.isEnabled = false;
+		auctionRewardsConfig.hasExtraRewards = false;
+	}
+
+	function lockAuctionRewardsForever() public onlyOwner {
+		config.auctionRewardsLocked  = true;
+		auctionRewardsConfig.isEnabled = false;
+	}
+
+	function lockNftHoldsRewardsForever() public onlyOwner {
+		config.nftHoldsRewardsLocked = true;
+		nftHoldsRewardConfig.isEnabled = false;
+	}
+
 
 }
